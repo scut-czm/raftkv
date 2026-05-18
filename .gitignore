@@ -1,0 +1,42 @@
+# Build outputs
+build/
+cmake-build-*/
+
+# Compiled binaries
+kv_server
+kv_client
+storage_test
+state_machine_test
+client_test
+perf_test
+
+# Generated protobuf files
+*.pb.h
+*.pb.cc
+
+# CMake generated
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+Makefile
+*.cmake
+
+# IDE
+.vscode/settings.json
+.idea/
+*.swp
+*.swo
+*~
+
+# Compile commands (keep for IDEs that need it)
+# compile_commands.json
+
+# Cache
+.cache/
+
+# Logs & test data
+*.log
+/tmp/
+
+# macOS
+.DS_Store
