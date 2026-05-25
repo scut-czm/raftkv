@@ -69,7 +69,7 @@
 ### 编译
 
 ```bash
-git clone https://github.com/yourname/raftkv
+git clone https://github.com/scut-czm/raftkv
 cd raftkv && mkdir -p build && cd build
 cmake .. -DCMAKE_BUILD_TYPE=RelWithDebInfo
 make -j$(nproc)
