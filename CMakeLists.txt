@@ -1,3 +1,11 @@
+# TODO: cmake_minimum_required / project(kv_server CXX C) / C++17
+# TODO: find_package(Protobuf/gflags/GTest)
+# TODO: add_subdirectory(braft)
+# TODO: protobuf_generate_cpp(kv.proto + schema.proto + row.proto)
+# TODO: add_library(sql_engine STATIC —— 所有 src/sql/*.cc + operators/*.cc + proto)
+# TODO: add_executable(kv_server / kv_client) + 各 Day 单测可执行目标
+# TODO: Day 17: sql_client / sql_end_to_end_test（依赖 sql_engine + raftkv_client）
+# TODO: enable_testing() + add_test() 注册所有单测
 cmake_minimum_required(VERSION 2.8.12)
 project(kv_server CXX C)
 
@@ -30,6 +38,51 @@ include_directories(${CMAKE_CURRENT_BINARY_DIR}/braft_build)
 set(PROTO_FILES ${CMAKE_CURRENT_SOURCE_DIR}/proto/kv.proto)
 protobuf_generate_cpp(PROTO_SRCS PROTO_HDRS ${PROTO_FILES})
 include_directories(${CMAKE_CURRENT_BINARY_DIR})
+
+# ── SQL Proto 编译（Day 11/13/14）────────────────────────────────────────
+set(SQL_PROTO_FILES
+    ${CMAKE_CURRENT_SOURCE_DIR}/proto/schema.proto
+    ${CMAKE_CURRENT_SOURCE_DIR}/proto/row.proto
+)
+protobuf_generate_cpp(SQL_PROTO_SRCS SQL_PROTO_HDRS ${SQL_PROTO_FILES})
+
+# ── SQL 引擎核心静态库 ────────────────────────────────────────────────────
+set(SQL_ENGINE_SRCS
+    src/sql/lexer.cc
+    src/sql/ast.cc
+    src/sql/parser.cc
+    src/sql/logical_plan.cc
+    src/sql/planner.cc
+    src/sql/logical_optimizer.cc
+    src/sql/table_schema.cc
+    src/sql/schema_manager.cc
+    src/sql/row_codec.cc
+    src/sql/row_id_allocator.cc
+    src/sql/operators/table_scan_operator.cc
+    src/sql/operators/filter_operator.cc
+    src/sql/operators/project_operator.cc
+    src/sql/operators/aggregate_operator.cc
+    src/sql/operators/limit_operator.cc
+    src/sql/physical_planner.cc
+    src/sql/sql_executor.cc
+    ${SQL_PROTO_SRCS}
+)
+
+set(SQL_ADAPTER_SRCS
+    src/sql/raft_kv_client_adapter.cc
+    src/client/kv_client.cc
+    ${PROTO_SRCS}
+)
+
+add_library(sql_engine STATIC ${SQL_ENGINE_SRCS})
+target_include_directories(sql_engine PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}
+    ${CMAKE_CURRENT_BINARY_DIR}
+    /usr/local/include
+)
+target_link_libraries(sql_engine
+    ${PROTOBUF_LIBRARIES} pthread
+)
 
 # ── Day 1: storage 单测 ──────────────────────────────────────────────────
 add_executable(storage_test
@@ -114,8 +167,17 @@ target_link_libraries(perf_test
     ${PROTOBUF_LIBRARIES} gflags pthread ssl crypto leveldb snappy z lz4
 )
 
-# ── ctest 注册 ────────────────────────────────────────────────────────────
-enable_testing()
-add_test(NAME storage_test     COMMAND storage_test)
-add_test(NAME state_machine_test COMMAND state_machine_test)
-add_test(NAME client_test      COMMAND client_test)
+# ── Day 9: parser_test ───────────────────────────────────────────────────
+add_executable(parser_test
+    tests/unit/parser_test.cc
+    src/sql/lexer.cc
+    src/sql/ast.cc
+    src/sql/parser.cc
+)
+target_include_directories(parser_test PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}
+    ${CMAKE_CURRENT_BINARY_DIR}
+)
+target_link_libraries(parser_test
+    GTest::GTest GTest::Main pthread
+)
