@@ -14,12 +14,13 @@ jobs:
       - name: Checkout Source Code
         uses: actions/checkout@v4
         with:
-          submodules: recursive # 自动递归拉取三方物理子模块（包含 braft）
+          submodules: recursive
 
       - name: Install System Dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential cmake libgflags-dev libprotobuf-dev protobuf-compiler libgtest-dev libsnappy-dev zlib1g-dev liblz4-dev libssl-dev libleveldb-dev librocksdb-dev
+          # 🛡️ 【核心补漏】在 libprotobuf-dev 后面精准补挂 libprotoc-dev 依赖
+          sudo apt-get install -y build-essential cmake libgflags-dev libprotobuf-dev libprotoc-dev protobuf-compiler libgtest-dev libsnappy-dev zlib1g-dev liblz4-dev libssl-dev libleveldb-dev librocksdb-dev
 
       - name: Install apache-brpc
         run: |
