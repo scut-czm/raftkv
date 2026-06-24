@@ -19,12 +19,12 @@ jobs:
       - name: Install System Dependencies
         run: |
           sudo apt-get update
-          # 🛡️ 【核心补漏】在 libprotobuf-dev 后面精准补挂 libprotoc-dev 依赖
           sudo apt-get install -y build-essential cmake libgflags-dev libprotobuf-dev libprotoc-dev protobuf-compiler libgtest-dev libsnappy-dev zlib1g-dev liblz4-dev libssl-dev libleveldb-dev librocksdb-dev
 
-      - name: Install apache-brpc
+      - name: Install apache-brpc (Pinned Stable Version)
         run: |
-          git clone --depth=1 https://github.com/apache/brpc.git /tmp/brpc
+          #  核心修正：指定 --branch v1.11.0 锁死稳定发行版，防御 master 分支内部重构破坏性突变
+          git clone --depth=1 --branch v1.11.0 https://github.com/apache/brpc.git /tmp/brpc
           cd /tmp/brpc
           mkdir build && cd build
           cmake .. -DCMAKE_BUILD_TYPE=Release -DBUILD_UNIT_TESTS=OFF
