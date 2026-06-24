@@ -1,115 +1,56 @@
 name: CI
 
 on:
-
   push:
-
     branches: [ main, master ]
-
   pull_request:
-
     branches: [ main, master ]
 
 jobs:
-
   build:
-
     runs-on: ubuntu-22.04
 
     steps:
-
-      - name: Checkout
-
+      - name: Checkout Source Code
         uses: actions/checkout@v4
-
         with:
+          submodules: recursive # 自动递归拉取三方物理子模块（包含 braft）
 
-          submodules: recursive
-
-      - name: Install dependencies
-
+      - name: Install System Dependencies
         run: |
-          
           sudo apt-get update
+          sudo apt-get install -y build-essential cmake libgflags-dev libprotobuf-dev protobuf-compiler libgtest-dev libsnappy-dev zlib1g-dev liblz4-dev libssl-dev libleveldb-dev librocksdb-dev
 
-          sudo apt-get install -y \
-
-            build-essential cmake \
-
-            libgflags-dev \
-
-            libprotobuf-dev protobuf-compiler \
-
-            libgtest-dev \
-
-            libsnappy-dev \
-
-            zlib1g-dev \
-
-            liblz4-dev \
-
-            libssl-dev \
-
-            libleveldb-dev \
-
-            librocksdb-dev
-
-      - name: Install brpc
-
+      - name: Install apache-brpc
         run: |
-          
           git clone --depth=1 https://github.com/apache/brpc.git /tmp/brpc
-
           cd /tmp/brpc
-
           mkdir build && cd build
-
-          cmake .. -DCMAKE_BUILD_TYPE=Release
-
+          cmake .. -DCMAKE_BUILD_TYPE=Release -DBUILD_UNIT_TESTS=OFF
           make -j$(nproc)
-
           sudo make install
 
-      - name: Build
-
+      - name: Build RaftSQL Kernel
         run: |
-          
           mkdir -p build && cd build
-
           cmake .. -DCMAKE_BUILD_TYPE=Release
-
           make -j$(nproc)
 
-      - name: Unit Tests (KV Layer)
-
+      - name: Run Unit Tests (KV Layer)
         run: |
-          
           cd build
-
           ./storage_test
-
           ./state_machine_test
-
           ./client_test
 
-      - name: Unit Tests (SQL Layer)
-
+      - name: Run Unit Tests (SQL Layer)
         run: |
-          
           cd build
-
           ./parser_test
-
           ./optimizer_test
-
           ./schema_manager_test
-
           ./row_codec_test
-
           ./insert_test
-
           ./select_test
-
           ./update_delete_test
-
           ./aggregate_test
