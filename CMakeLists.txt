@@ -198,10 +198,15 @@ target_include_directories(optimizer_test PRIVATE
 )
 
 target_link_libraries(optimizer_test
-    sql_engine                   # 🛡️ 【核心补漏】直接绑定完整的 SQL 引擎，瞬间带入 SchemaManager 物理实现
-    GTest::GTest GTest::Main 
+   sql_engine
+    brpc
+    ${PROTOBUF_LIBRARIES}        # 🛡️【核心修正】使用 CMake 官方探针变量，确保与主程序、bRPC 维持 100% 同源符号
+    gflags
+    GTest::GTest GTest::Main
     pthread
+    
 )
+
 
 # ── Day 11: sql_executor_test ────────────────────────────────────────────
 add_executable(sql_executor_test
