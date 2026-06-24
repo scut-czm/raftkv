@@ -24,7 +24,7 @@ jobs:
       - name: Install apache-brpc (Pinned Stable Version)
         run: |
           #  核心修正：指定 --branch v1.11.0 锁死稳定发行版，防御 master 分支内部重构破坏性突变
-          git clone --depth=1 --branch v1.11.0 https://github.com/apache/brpc.git /tmp/brpc
+          git clone --depth=1 --branch 1.11.0 https://github.com/apache/brpc.git /tmp/brpc
           cd /tmp/brpc
           mkdir build && cd build
           cmake .. -DCMAKE_BUILD_TYPE=Release -DBUILD_UNIT_TESTS=OFF
