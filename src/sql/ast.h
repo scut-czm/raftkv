@@ -29,7 +29,7 @@ struct ColumnSpec {
 };
 // 表达式节点（WHERE 条件）
 struct Expr {
-  enum class Kind { kColumn, kLiteral, kBinop };
+  enum class Kind { kColumn, kLiteral, kBinOp };
   Kind kind;
 
   // kColumn

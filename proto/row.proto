@@ -1,0 +1,21 @@
+// TODO: 定义 Value message（oneof val: int64/string/double/bool + is_null）
+// TODO: 定义 RowData message（map<string, Value> columns）
+
+syntax="proto3";
+package raftsql;
+
+// 值类型（支持 INT / VARCHAR / FLOAT / BOOL / NULL）
+message Value{
+    oneof val{
+        int64 int_val=1;
+        string str_val=2;
+        double float_val=3;
+        bool bool_val=4;
+    }
+    bool is_null=5;
+}
+
+//行数据：列名 → 值
+message RowData{
+    map<string, Value> columns=1;
+}

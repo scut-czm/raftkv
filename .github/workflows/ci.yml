@@ -1,61 +1,115 @@
 name: CI
 
 on:
+
   push:
+
     branches: [ main, master ]
+
   pull_request:
+
     branches: [ main, master ]
 
 jobs:
+
   build:
+
     runs-on: ubuntu-22.04
 
     steps:
-      - name: Checkout (with submodules)
+
+      - name: Checkout
+
         uses: actions/checkout@v4
+
         with:
+
           submodules: recursive
 
-      - name: Install system dependencies
+      - name: Install dependencies
+
         run: |
-          sudo apt-get update -q
+          
+          sudo apt-get update
+
           sudo apt-get install -y \
-            build-essential cmake git \
+
+            build-essential cmake \
+
             libgflags-dev \
+
             libprotobuf-dev protobuf-compiler \
+
+            libgtest-dev \
+
+            libsnappy-dev \
+
+            zlib1g-dev \
+
+            liblz4-dev \
+
             libssl-dev \
-            libsnappy-dev zlib1g-dev liblz4-dev \
-            libleveldb-dev librocksdb-dev \
-            libgtest-dev
 
-      # brpc 无 apt 包，从源码编译并缓存
-      - name: Cache brpc install
-        id: cache-brpc
-        uses: actions/cache@v3
-        with:
-          path: ~/.local/brpc
-          key: brpc-ubuntu22-${{ hashFiles('.github/workflows/ci.yml') }}
+            libleveldb-dev \
 
-      - name: Build and install brpc
-        if: steps.cache-brpc.outputs.cache-hit != 'true'
+            librocksdb-dev
+
+      - name: Install brpc
+
         run: |
-          git clone https://github.com/apache/brpc.git --depth=1 /tmp/brpc
-          cmake -S /tmp/brpc -B /tmp/brpc/build \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_INSTALL_PREFIX=$HOME/.local/brpc \
-            -DWITH_GLOG=OFF
-          cmake --build /tmp/brpc/build -j$(nproc)
-          cmake --install /tmp/brpc/build
+          
+          git clone --depth=1 https://github.com/apache/brpc.git /tmp/brpc
 
-      - name: Build RaftKV
-        run: |
-          mkdir -p build
-          cmake -S . -B build \
-            -DCMAKE_BUILD_TYPE=RelWithDebInfo \
-            -DCMAKE_PREFIX_PATH=$HOME/.local/brpc
-          cmake --build build -j$(nproc)
+          cd /tmp/brpc
 
-      - name: Run unit tests
+          mkdir build && cd build
+
+          cmake .. -DCMAKE_BUILD_TYPE=Release
+
+          make -j$(nproc)
+
+          sudo make install
+
+      - name: Build
+
         run: |
+          
+          mkdir -p build && cd build
+
+          cmake .. -DCMAKE_BUILD_TYPE=Release
+
+          make -j$(nproc)
+
+      - name: Unit Tests (KV Layer)
+
+        run: |
+          
           cd build
-          ctest --output-on-failure -R "storage_test|state_machine_test|client_test"
+
+          ./storage_test
+
+          ./state_machine_test
+
+          ./client_test
+
+      - name: Unit Tests (SQL Layer)
+
+        run: |
+          
+          cd build
+
+          ./parser_test
+
+          ./optimizer_test
+
+          ./schema_manager_test
+
+          ./row_codec_test
+
+          ./insert_test
+
+          ./select_test
+
+          ./update_delete_test
+
+          ./aggregate_test

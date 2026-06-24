@@ -1,0 +1,30 @@
+// TODO: 定义 DataType 枚举（DT_UNKNOWN/DT_INT/DT_VARCHAR/DT_FLOAT/DT_BOOL）
+// TODO: 定义 ColumnDef message（name/type/nullable/primary_key/varchar_len）
+// TODO: 定义 TableSchema message（table_name/columns/next_row_id）
+
+
+// proto/schema.proto
+syntax = "proto3";
+package raftsql;
+
+enum DataType {
+  DT_UNKNOWN = 0;
+  DT_INT     = 1;
+  DT_VARCHAR = 2;
+  DT_FLOAT   = 3;
+  DT_BOOL    = 4;
+}
+
+message ColumnDef{
+    string name=1;
+    DataType type=2;
+    bool nullable=3;
+    bool primary_key=4;
+    int32 varchar_len=5; // VARCHAR(N) 的 N
+}
+
+message TableSchema{
+    string table_name=1;
+    repeated ColumnDef columns=2;
+    int64 next_row_id=3;// INSERT 自增 ID
+}

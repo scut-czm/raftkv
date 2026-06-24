@@ -24,7 +24,7 @@ std::unique_ptr<Expr> Expr::MakeBinOp(std::string op,
                                       std::unique_ptr<Expr> left,
                                       std::unique_ptr<Expr> right) {
   auto e = std::make_unique<Expr>();
-  e->kind = Kind::kBinop;
+  e->kind = Kind::kBinOp;
   e->op = std::move(op);
   e->left = std::move(left);
   e->right = std::move(right);

@@ -245,6 +245,28 @@ bash ../tests/chaos/long_stress_test.sh
 
 ---
 
+## SQL 支持（RaftSQL）
+
+在 RaftKV 之上构建了完整的 SQL 引擎层：
+
+### 支持的 SQL
+
+```sql
+-- DDL
+CREATE TABLE users (id INT PRIMARY KEY, name VARCHAR(64), age INT);
+
+-- DML
+INSERT INTO users (id, name, age) VALUES (1, 'Alice', 25);
+SELECT name, age FROM users WHERE age >= 18;
+UPDATE users SET age = 26 WHERE name = 'Alice';
+DELETE FROM users WHERE age < 18;
+
+-- 聚合
+SELECT COUNT(*) FROM users;
+SELECT SUM(age) FROM users WHERE dept = 'Engineering';
+SELECT MIN(age) FROM users;
+SELECT MAX(age) FROM users;
+
 ## License
 
 MIT

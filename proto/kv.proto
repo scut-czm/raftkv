@@ -4,81 +4,96 @@ package kv;
 option cc_generic_services = true;
 
 // KV 操作类型
-enum OperationType{
+enum OperationType {
     OP_PUT = 0;
     OP_DELETE = 1;
-    OP_GET = 2; // 线性一致读：走 Raft apply
-    OP_SCAN = 3;// 线性一致 Scan：走 Raft apply
+    OP_GET = 2;        // 线性一致读：走 Raft apply
+    OP_SCAN = 3;       // 线性一致 Scan：走 Raft apply
+    OP_BATCH_PUT = 4;  // 【扩展】原子批量写入日志类型
 }
 
-// KV 操作日志（写入 Raft 日志的内容）
-message KvOperation{
-    OperationType op=1;
-    string key=2;
-    string value=3;// Delete 操作不需要 value
+// KV 操作日志（最终写入 Raft WAL 预写日志与共识网络的内容）
+message KvOperation {
+    OperationType op = 1;
+    string key = 2;
+    bytes value = 3;   // 【关键修正】由 string 改为 bytes，允许承载任意密度的二进制行存乱码
 }
 
-// ── RPC 请求/响应 ──
-message PutRequest{
-    string key=1;
-    string value=2;
+// ── RPC 请求/响应实体 ──
+
+message PutRequest {
+    string key = 1;
+    bytes value = 2;   // 【关键修正】由 string 改为 bytes，承载明文哈希 Map 压缩后的二进制流
 }
 
-message PutResponse{
-    bool success=1;
-    string redirect =2;// 如果不是 Leader，返回 Leader 地址
-    string error=3;
+message PutResponse {
+    bool success = 1;
+    string redirect = 2; // 如果当前节点不是 Leader，返回真正的 Leader 物理 ip:port 地址
+    string error = 3;
 }
 
-message GetRequest{
-    string key=1;
-    bool linearizable=2;// true = ReadIndex 线性一致读；false = 直接读状态机
+message GetRequest {
+    string key = 1;
+    bool linearizable = 2; // true = 走 ReadIndex 强一致读路径；false = 走直接读取状态机快路径
 }
 
-message GetResponse{
-    bool success=1;
-    string value=2;// key 存在时返回
-    bool found=3;// key 是否存在
-    string redirect=4;// 如果不是 Leader，返回 Leader 地址
-    string error=5;
+message GetResponse {
+    bool success = 1;
+    bytes value = 2;   // 【关键修正】由 string 改为 bytes，防止 SELECT 流式反序列化时报错
+    bool found = 3;    // 目标 Key 是否在 RocksDB 中物理存在
+    string redirect = 4;
+    string error = 5;
 }
 
-message DeleteRequest{
-    string key=1;
+message DeleteRequest {
+    string key = 1;
 }
 
-message DeleteResponse{
-    bool success=1;
-    string redirect=2;// 如果不是 Leader，返回 Leader 地址
-    string error=3;
+message DeleteResponse {
+    bool success = 1;
+    string redirect = 2;
+    string error = 3;
 }
 
-// KV 键值对（Scan 结果中的单条记录）
-message KvPair{
-    string key=1;
-    string value=2;
+// KV 键值对（Scan 结果以及批量操作中的单条实体元组）
+message KvPair {
+    string key = 1;
+    bytes value = 2;   // 【关键修正】由 string 改为 bytes
 }
 
-// Scan 接口
-message ScanRequest{
-    string start_key=1;// 扫描起始 key（含）
-    string end_key=2; // 扫描结束 key（不含），为空表示无上界
-    int32 limit=3;// 最多返回条数，0 表示不限制
-    bool linearizable=4;// true = ReadIndex 线性一致读
+// Scan 区间检索接口
+message ScanRequest {
+    string start_key = 1;  // 扫描起始 key（含）
+    string end_key = 2;    // 扫描结束 key（不含），为空表示无上界边界
+    int32 limit = 3;       // 最多返回条数，0 表示不限制上限
+    bool linearizable = 4; // true = ReadIndex 线性一致读
 }
 
-message ScanResponse{
-    bool success=1;
-    repeated KvPair kvs=2;
-    string redirect=3;
-    string error=4;
+message ScanResponse {
+    bool success = 1;
+    repeated KvPair kvs = 2;
+    string redirect = 3;
+    string error = 4;
 }
 
+// 【扩展】真正的物理批量写入请求/响应包
+message BatchPutRequest {
+    repeated KvPair kvs = 1; // 打包打包千行数据，复用 bytes 化的 KvPair
+}
 
-// KV 服务接口
-service KvService{
+message BatchPutResponse {
+    bool success = 1;
+    string redirect = 2;
+    string error = 3;
+}
+
+// ── 计算与存储分离的中央分布式通信网关 ──
+service KvService {
     rpc Put(PutRequest) returns (PutResponse);
     rpc Get(GetRequest) returns (GetResponse);
     rpc Delete(DeleteRequest) returns (DeleteResponse);
     rpc Scan(ScanRequest) returns (ScanResponse);
+    
+    // 【高级物化】真正的物理批量共识接口
+    rpc BatchPut(BatchPutRequest) returns (BatchPutResponse);
 }
