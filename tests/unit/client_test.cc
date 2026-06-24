@@ -39,7 +39,7 @@ TEST(ClientUtilTest, ParsePeersEmpty) {
 
 TEST(ClientOptionsTest, Defaults) {
   ClientOptions opts;
-  EXPECT_EQ(opts.max_retry, 3);
+  EXPECT_EQ(opts.max_retry, 50);
   EXPECT_EQ(opts.timeout_ms, 3000);
   EXPECT_TRUE(opts.linearizable);
 }
