@@ -2,6 +2,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <cstdint>
 #include <filesystem>
 #include <gtest/gtest.h>
 #include <memory>
@@ -287,4 +288,201 @@ TEST_F(StorageTest, BatchWriteEmpty) {
   // 空批量写入应成功
   EXPECT_TRUE(storage_->BatchWrite({}, {}));
 }
+
+//============================================================
+// ── MVCC 三 CF（default / lock / write）──────────────────────────────
+
+// 简易 MVCC key 编码：user_key + 大端存储的 (MAX - ts)，让高 ts 排前面
+static std::string EncodeTsKey(const std::string &key, uint64_t ts) {
+  uint64_t rev = ~ts;
+  std::string out = key;
+  for (int i = 7; i >= 0; --i) {
+    out.push_back(static_cast<char>((rev >> (i * 8)) & 0xFF));
+  }
+  return out;
+}
+
+TEST_F(StorageTest, MvccGetLockNotFound) {
+  // 未写过锁时，lock CF 点查应返回 false
+  std::string value;
+  EXPECT_FALSE(storage_->Get("lock", "k1", &value));
+}
+
+TEST_F(StorageTest, MvccGetUnknownCF) {
+  std::string value;
+  EXPECT_FALSE(storage_->Get("no_such_cf", "k1", &value));
+}
+
+TEST_F(StorageTest, MvccCFIsolation) {
+  // 同名 key 写入不同 CF，互不可见
+  WriteBatch batch;
+  batch.Put("lock", "key", "lock_val");
+  batch.Put("default", "key", "default_val");
+  batch.Put("write", "key", "write_val");
+  ASSERT_TRUE(storage_->Write(std::move(batch)));
+
+  std::string v;
+  ASSERT_TRUE(storage_->Get("lock", "key", &v));
+  EXPECT_EQ(v, "lock_val");
+  ASSERT_TRUE(storage_->Get("default", "key", &v));
+  EXPECT_EQ(v, "default_val");
+  ASSERT_TRUE(storage_->Get("write", "key", &v));
+  EXPECT_EQ(v, "write_val");
+  // data CF（旧路径）不受影响
+  EXPECT_FALSE(storage_->Get("key", &v));
+}
+
+TEST_F(StorageTest, MvccCrossCFAtomicWrite) {
+  // 模拟 Prewrite：lock + default 同批写入
+  WriteBatch prewrite;
+  prewrite.Put("lock", "k1", "lock_info@ts=10");
+  prewrite.Put("default", EncodeTsKey("k1", 10), "value_v10");
+  ASSERT_TRUE(storage_->Write(std::move(prewrite)));
+
+  std::string v;
+  ASSERT_TRUE(storage_->Get("lock", "k1", &v));
+  ASSERT_TRUE(storage_->Get("default", EncodeTsKey("k1", 10), &v));
+  EXPECT_EQ(v, "value_v10");
+
+  // 模拟 Commit：写 write CF + 删 lock，同批原子生效
+  WriteBatch commit;
+  commit.Put("write", EncodeTsKey("k1", 12), "write_info(start_ts=10)");
+  commit.Delete("lock", "k1");
+  ASSERT_TRUE(storage_->Write(std::move(commit)));
+
+  EXPECT_FALSE(storage_->Get("lock", "k1", &v));
+  ASSERT_TRUE(storage_->Get("write", EncodeTsKey("k1", 12), &v));
+  EXPECT_EQ(v, "write_info(start_ts=10)");
+}
+
+TEST_F(StorageTest, MvccWriteUnknownCFRejectsWholeBatch) {
+  // 批内含未知 CF：整批拒绝，已知 CF 的操作也不落盘
+  WriteBatch batch;
+  batch.Put("lock", "k2", "lock_val");
+  batch.Put("bad_cf", "k2", "oops");
+  EXPECT_FALSE(storage_->Write(std::move(batch)));
+
+  std::string v;
+  EXPECT_FALSE(storage_->Get("lock", "k2", &v));
+}
+
+TEST_F(StorageTest, MvccWriteCFIterator) {
+  // write CF 上按 EncodeTsKey 写入多版本，验证迭代顺序与 Seek 语义
+  WriteBatch batch;
+  batch.Put("write", EncodeTsKey("k1", 5), "commit@5");
+  batch.Put("write", EncodeTsKey("k1", 20), "commit@20");
+  batch.Put("write", EncodeTsKey("k2", 8), "commit@8");
+  ASSERT_TRUE(storage_->Write(std::move(batch)));
+
+  auto it = storage_->NewIterator("write");
+  ASSERT_NE(it, nullptr);
+
+  // Seek(k1@read_ts=15)：应落在 commit_ts <= 15 的最新版本，即 commit@5
+  it->Seek(EncodeTsKey("k1", 15));
+  ASSERT_TRUE(it->Valid());
+  EXPECT_EQ(it->value().ToString(), "commit@5");
+
+  // Seek(k1@read_ts=100)：应落在最新提交 commit@20
+  it->Seek(EncodeTsKey("k1", 100));
+  ASSERT_TRUE(it->Valid());
+  EXPECT_EQ(it->value().ToString(), "commit@20");
+
+  // 全量遍历：k1@20, k1@5, k2@8（同 key 内高 ts 在前）
+  int count = 0;
+  std::vector<std::string> values;
+  for (it->SeekToFirst(); it->Valid(); it->Next()) {
+    values.push_back(it->value().ToString());
+    ++count;
+  }
+  ASSERT_EQ(count, 3);
+  EXPECT_EQ(values[0], "commit@20");
+  EXPECT_EQ(values[1], "commit@5");
+  EXPECT_EQ(values[2], "commit@8");
+
+  // 未知 CF 返回 nullptr
+  EXPECT_EQ(storage_->NewIterator("no_such_cf"), nullptr);
+}
+
+TEST_F(StorageTest, MvccCheckpointCoversAllCF) {
+  // Checkpoint 应覆盖 MVCC 三 CF
+  WriteBatch batch;
+  batch.Put("lock", "ck_k", "lock_v");
+  batch.Put("default", "ck_k", "default_v");
+  batch.Put("write", "ck_k", "write_v");
+  ASSERT_TRUE(storage_->Write(std::move(batch)));
+
+  std::string ck_path = "/tmp/raftkv_mvcc_ck_test_" + std::to_string(getpid());
+  fs::remove_all(ck_path);
+  ASSERT_TRUE(storage_->CreateCheckpoint(ck_path));
+
+  WriteBatch after;
+  after.Put("lock", "after_ck", "should_vanish");
+  ASSERT_TRUE(storage_->Write(std::move(after)));
+
+  ASSERT_TRUE(storage_->RestoreFromCheckpoint(ck_path));
+
+  std::string v;
+  ASSERT_TRUE(storage_->Get("lock", "ck_k", &v));
+  EXPECT_EQ(v, "lock_v");
+  ASSERT_TRUE(storage_->Get("default", "ck_k", &v));
+  EXPECT_EQ(v, "default_v");
+  ASSERT_TRUE(storage_->Get("write", "ck_k", &v));
+  EXPECT_EQ(v, "write_v");
+  EXPECT_FALSE(storage_->Get("lock", "after_ck", &v));
+
+  fs::remove_all(ck_path);
+}
+
+// ── 旧库升级兼容性：老目录只有 default/data/meta 三个 CF ──────────────
+TEST(StorageUpgradeTest, OpenLegacyDbAutoCreatesMvccCF) {
+  std::string db_path =
+      "/tmp/raftkv_legacy_upgrade_test_" + std::to_string(getpid());
+  fs::remove_all(db_path);
+
+  // 1. 用裸 RocksDB API 建一个只有 default/data/meta 的"旧库"并写入旧数据
+  {
+    rocksdb::Options opts;
+    opts.create_if_missing = true;
+    rocksdb::DB *raw_db = nullptr;
+    ASSERT_TRUE(rocksdb::DB::Open(opts, db_path, &raw_db).ok());
+
+    rocksdb::ColumnFamilyHandle *data_h = nullptr;
+    rocksdb::ColumnFamilyHandle *meta_h = nullptr;
+    ASSERT_TRUE(raw_db
+                    ->CreateColumnFamily(rocksdb::ColumnFamilyOptions{},
+                                         "data", &data_h)
+                    .ok());
+    ASSERT_TRUE(raw_db
+                    ->CreateColumnFamily(rocksdb::ColumnFamilyOptions{},
+                                         "meta", &meta_h)
+                    .ok());
+    ASSERT_TRUE(raw_db
+                    ->Put(rocksdb::WriteOptions{}, data_h, "legacy_key",
+                          "legacy_val")
+                    .ok());
+    raw_db->DestroyColumnFamilyHandle(data_h);
+    raw_db->DestroyColumnFamilyHandle(meta_h);
+    delete raw_db;
+  }
+
+  // 2. 用新 RocksDbStorage 打开：create_missing_column_families 自动补建
+  //    lock/write CF，旧数据可读
+  RocksDbStorage storage{StorageOptions{db_path}};
+  ASSERT_TRUE(storage.Open());
+
+  std::string v;
+  ASSERT_TRUE(storage.Get("legacy_key", &v));
+  EXPECT_EQ(v, "legacy_val");
+
+  // 新 CF 立即可用
+  WriteBatch batch;
+  batch.Put("lock", "new_k", "new_v");
+  ASSERT_TRUE(storage.Write(std::move(batch)));
+  ASSERT_TRUE(storage.Get("lock", "new_k", &v));
+  EXPECT_EQ(v, "new_v");
+
+  storage.Close();
+  fs::remove_all(db_path);
+}
+
 } // namespace raftkv

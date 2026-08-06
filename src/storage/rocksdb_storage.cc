@@ -62,10 +62,35 @@ Status RocksDbStorage::Open() {
   // meta CF 配置（元数据量小，使用默认配置即可）
   rocksdb::ColumnFamilyOptions meta_cf_opts;
 
+  // ── MVCC 三 CF 配置 ──────────────────────────────────────────────────
+  // default CF：MVCC 数据版本（EncodeKey(key, start_ts) -> value）。
+  // 数据体量与 data CF 同级，直接复用 data CF 的重载配置。
+  rocksdb::ColumnFamilyOptions mvcc_default_cf_opts = data_cf_opts;
+
+  // lock CF：只存未提交事务的锁，事务提交/回滚后即删除。
+  // 常驻数据量极小、读极频繁（每次快照读都要查锁）——
+  // 小 write buffer + 全内存友好即可，不需要大缓存和分层压缩。
+  rocksdb::ColumnFamilyOptions lock_cf_opts;
+  lock_cf_opts.write_buffer_size = 16 * 1024 * 1024;
+  lock_cf_opts.table_factory.reset(
+      rocksdb::NewBlockBasedTableFactory(table_opts));
+
+  // write CF：提交记录（EncodeKey(key, commit_ts) -> WriteInfo）。
+  // 读路径以 Seek 为主（SeekWrite），bloom filter 对 Seek 无效前缀场景
+  // 收益有限，但 whole-key bloom 仍能加速 GetTxnRecord 的点查，保留即可。
+  rocksdb::ColumnFamilyOptions write_cf_opts;
+  write_cf_opts.write_buffer_size = options_.write_buffer_size;
+  write_cf_opts.max_write_buffer_number = options_.max_write_buffer_number;
+  write_cf_opts.table_factory.reset(
+      rocksdb::NewBlockBasedTableFactory(table_opts));
+  write_cf_opts.level_compaction_dynamic_level_bytes = true;
+
   std::vector<rocksdb::ColumnFamilyDescriptor> cf_descriptors = {
-      {rocksdb::kDefaultColumnFamilyName, {}},
+      {rocksdb::kDefaultColumnFamilyName, mvcc_default_cf_opts},
       {kDataCF, data_cf_opts},
       {kMetaCF, meta_cf_opts},
+      {kLockCF, lock_cf_opts},
+      {kWriteCF, write_cf_opts},
   };
 
   std::vector<rocksdb::ColumnFamilyHandle *> handles;
@@ -80,6 +105,8 @@ Status RocksDbStorage::Open() {
   default_cf_handle_ = handles[0];
   data_cf_handle_ = handles[1];
   meta_cf_handle_ = handles[2];
+  lock_cf_handle_ = handles[3];
+  write_cf_handle_ = handles[4];
 
   // ── 保存写选项 ──
   write_opts_.disableWAL = options_.disable_wal;
@@ -90,17 +117,13 @@ void RocksDbStorage::Close() {
   if (db_ == nullptr) {
     return;
   }
-  if (default_cf_handle_) {
-    db_->DestroyColumnFamilyHandle(default_cf_handle_);
-    default_cf_handle_ = nullptr;
-  }
-  if (data_cf_handle_) {
-    db_->DestroyColumnFamilyHandle(data_cf_handle_);
-    data_cf_handle_ = nullptr;
-  }
-  if (meta_cf_handle_) {
-    db_->DestroyColumnFamilyHandle(meta_cf_handle_);
-    meta_cf_handle_ = nullptr;
+
+  for (auto **h : {&default_cf_handle_, &data_cf_handle_, &meta_cf_handle_,
+                   &lock_cf_handle_, &write_cf_handle_}) {
+    if (*h) {
+      db_->DestroyColumnFamilyHandle(*h);
+      *h = nullptr;
+    }
   }
   delete db_;
   db_ = nullptr;
@@ -206,6 +229,63 @@ Status RocksDbStorage::GetMeta(const std::string &key,
   auto s = db_->Get(rocksdb::ReadOptions{}, meta_cf_handle_, key, value);
   if (s.IsNotFound())
     return Status::Error("not found");
+  return s.ok() ? Status::OK() : Status::Error(s.ToString());
+}
+// ── MVCC 通用接口 ─────────────────────────────────────────────────────────
+rocksdb::ColumnFamilyHandle *
+RocksDbStorage::ResolveHandle(const std::string &cf) const {
+  if (cf == rocksdb::kDefaultColumnFamilyName) {
+    return default_cf_handle_;
+  }
+  if (cf == kDataCF) {
+    return data_cf_handle_;
+  }
+  if (cf == kMetaCF) {
+    return meta_cf_handle_;
+  }
+  if (cf == kLockCF) {
+    return lock_cf_handle_;
+  }
+  if (cf == kWriteCF) {
+    return write_cf_handle_;
+  }
+  return nullptr;
+}
+
+bool RocksDbStorage::Get(const std::string &cf, const std::string &key,
+                         std::string *value) const {
+  auto *handle = ResolveHandle(cf);
+  if (handle == nullptr) {
+    return false;
+  }
+  auto s = db_->Get(rocksdb::ReadOptions{}, handle, key, value);
+  return s.ok();
+}
+
+std::unique_ptr<rocksdb::Iterator>
+RocksDbStorage::NewIterator(const std::string &cf) const {
+  auto *handle = ResolveHandle(cf);
+  if (handle == nullptr) {
+    return nullptr;
+  }
+  return std::unique_ptr<rocksdb::Iterator>(
+      db_->NewIterator(rocksdb::ReadOptions{}, handle));
+}
+
+Status RocksDbStorage::Write(WriteBatch &&batch) {
+  rocksdb::WriteBatch rocks_batch;
+  for (const auto &op : batch.ops_) {
+    auto *handle = ResolveHandle(op.cf);
+    if (handle == nullptr) {
+      return Status::Error("unknown column family: " + op.cf);
+    }
+    if (op.type == WriteBatch::OpType::kDelete) {
+      rocks_batch.Delete(handle, op.key);
+    } else {
+      rocks_batch.Put(handle, op.key, op.value);
+    }
+  }
+  auto s = db_->Write(write_opts_, &rocks_batch);
   return s.ok() ? Status::OK() : Status::Error(s.ToString());
 }
 

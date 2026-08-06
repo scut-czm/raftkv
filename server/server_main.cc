@@ -6,6 +6,7 @@
 #include <braft/raft.h>
 #include <brpc/server.h>
 #include <butil/logging.h>
+#include <filesystem>
 #include <gflags/gflags.h>
 #include <memory>
 
@@ -23,8 +24,19 @@ int main(int argc, char *argv[]) {
             << "  group=" << FLAGS_group << "  data=" << FLAGS_data_path;
 
   // 1. 初始化 RocksDB 存储
+  // RocksDB 关闭了 WAL（持久性由 braft 日志保证），崩溃后残留的 DB
+  // 只是「掉了 memtable、且各 CF 刷盘进度不一」的脏状态，直接在其上
+  // 重放日志会得到与其他副本不同的结果（如 Prewrite 冲突判定翻转），
+  // 造成副本发散。因此启动时删掉旧 DB，从 braft snapshot + 日志重建。
   raftkv::StorageOptions storage_opts;
   storage_opts.db_path = FLAGS_data_path + "/rocksdb";
+  std::error_code ec;
+  std::filesystem::remove_all(storage_opts.db_path, ec);
+  if (ec) {
+    LOG(ERROR) << "清理残留 RocksDB 失败: " << storage_opts.db_path << " "
+               << ec.message();
+    return -1;
+  }
   auto storage = std::make_shared<raftkv::RocksDbStorage>(storage_opts);
   if (!storage->Open()) {
     LOG(ERROR) << "RocksDB 打开失败: " << storage_opts.db_path;

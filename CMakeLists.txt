@@ -105,11 +105,136 @@ target_link_libraries(storage_test
     GTest::GTest GTest::Main pthread snappy z lz4
 )
 
+# ── mvcc_codec 单测（纯编码逻辑，无 rocksdb 依赖）──────────────────────
+add_executable(mvcc_codec_test
+    tests/unit/mvcc_codec_test.cc
+    src/storage/mvcc_codec.cc
+)
+
+target_include_directories(mvcc_codec_test PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+)
+
+target_link_libraries(mvcc_codec_test
+    GTest::GTest GTest::Main pthread
+)
+
+# ── local_tso 单测（header-only，无外部依赖）─────────────────────
+add_executable(local_tso_test
+    tests/unit/local_tso_test.cc
+)
+
+target_include_directories(local_tso_test PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+)
+
+target_link_libraries(local_tso_test
+    GTest::GTest GTest::Main pthread
+)
+
+# ── mvcc_txn 单测（MVCC 事务层，依赖 rocksdb）────────────────────────────
+add_executable(mvcc_txn_test
+    tests/unit/mvcc_txn_test.cc
+    src/storage/mvcc_txn.cc
+    src/storage/mvcc_codec.cc
+    src/storage/rocksdb_storage.cc
+)
+target_include_directories(mvcc_txn_test PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+    ${CMAKE_CURRENT_BINARY_DIR}
+    /usr/local/include
+)
+target_link_libraries(mvcc_txn_test
+    ${ROCKSDB_LIB}
+    GTest::GTest GTest::Main pthread snappy z lz4
+)
+
+
+# ---txn-integration-test
+add_executable(txn_integration_test
+    tests/integration/txn_integration_test.cc
+    ${PROTO_SRCS}
+)
+target_include_directories(txn_integration_test PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+    ${CMAKE_CURRENT_BINARY_DIR}
+    /usr/local/include
+)
+target_link_libraries(txn_integration_test
+    ${BRPC_LIB}
+    ${PROTOBUF_LIBRARIES} gflags pthread ssl crypto leveldb snappy z lz4
+    GTest::GTest GTest::Main
+)
+
+# ---txn-client-test（客户端事务库 Transaction + KVClient 事务接口）
+add_executable(txn_client_test
+    tests/integration/txn_client_test.cc
+    src/client/kv_client.cc
+    src/client/transaction.cc
+    ${PROTO_SRCS}
+)
+target_include_directories(txn_client_test PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+    ${CMAKE_CURRENT_BINARY_DIR}
+    /usr/local/include
+)
+target_link_libraries(txn_client_test
+    ${BRPC_LIB}
+    ${PROTOBUF_LIBRARIES} gflags pthread ssl crypto leveldb snappy z lz4
+    GTest::GTest GTest::Main
+)
+
+add_executable(txn_probe
+    tests/integration/txn_probe.cc
+    ${PROTO_SRCS}
+)
+target_include_directories(txn_probe PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+    ${CMAKE_CURRENT_BINARY_DIR}
+    /usr/local/include
+)
+target_link_libraries(txn_probe
+    ${BRPC_LIB}
+    ${PROTOBUF_LIBRARIES} gflags pthread ssl crypto leveldb snappy z lz4
+)
+
+# ── 混沌：银行转账压测驱动（配合 tests/chaos/txn_bank_chaos_test.sh）──
+add_executable(bank_chaos_test
+    tests/chaos/bank_chaos_test.cc
+    src/client/kv_client.cc
+    src/client/transaction.cc
+    ${PROTO_SRCS}
+)
+target_include_directories(bank_chaos_test PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+    ${CMAKE_CURRENT_BINARY_DIR}
+    /usr/local/include
+)
+target_link_libraries(bank_chaos_test
+    ${BRPC_LIB}
+    ${PROTOBUF_LIBRARIES} gflags pthread ssl crypto leveldb snappy z lz4
+)
+
+# ── 混沌：离线 MVCC CF 检查器（lock CF 残锁 / write CF 悬空 start_ts）──
+add_executable(mvcc_db_check
+    tests/chaos/mvcc_db_check.cc
+    src/storage/mvcc_codec.cc
+)
+target_include_directories(mvcc_db_check PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+    /usr/local/include
+)
+target_link_libraries(mvcc_db_check
+    ${ROCKSDB_LIB} gflags pthread snappy z lz4
+)
+
 # ── Day 2+: kv_server（源文件实现后可 make kv_server）──────────────────
 add_executable(kv_server
     server/server_main.cc
     src/raft/kv_state_machine.cc
     src/service/kv_service.cc
+    src/storage/mvcc_txn.cc
+    src/storage/mvcc_codec.cc
     src/storage/rocksdb_storage.cc
     ${PROTO_SRCS}
 )
@@ -123,6 +248,7 @@ target_link_libraries(kv_server
 add_executable(kv_client
     client/client_main.cc
     src/client/kv_client.cc
+    src/client/transaction.cc
     ${PROTO_SRCS}
 )
 target_link_libraries(kv_client
@@ -135,6 +261,8 @@ target_link_libraries(kv_client
 add_executable(state_machine_test
     tests/unit/state_machine_test.cc
     src/raft/kv_state_machine.cc
+    src/storage/mvcc_txn.cc
+    src/storage/mvcc_codec.cc
     src/storage/rocksdb_storage.cc
     ${PROTO_SRCS}
 )
@@ -330,6 +458,7 @@ target_link_libraries(sql_end_to_end_test
 # ── ctest 注册 ────────────────────────────────────────────────────────────
 enable_testing()
 add_test(NAME storage_test       COMMAND storage_test)
+add_test(NAME mvcc_codec_test    COMMAND mvcc_codec_test)
 add_test(NAME state_machine_test COMMAND state_machine_test)
 add_test(NAME client_test        COMMAND client_test)
 add_test(NAME parser_test        COMMAND parser_test)
@@ -341,3 +470,7 @@ add_test(NAME insert_test        COMMAND insert_test)
 add_test(NAME select_test        COMMAND select_test)
 add_test(NAME update_delete_test COMMAND update_delete_test)
 add_test(NAME aggregate_test     COMMAND aggregate_test)
+add_test(NAME mvcc_txn_test      COMMAND mvcc_txn_test)
+add_test(NAME local_tso_test     COMMAND local_tso_test)
+add_test(NAME txn_integration_test COMMAND txn_integration_test)
+add_test(NAME txn_client_test     COMMAND txn_client_test)

@@ -10,6 +10,99 @@ enum OperationType {
     OP_GET = 2;        // 线性一致读：走 Raft apply
     OP_SCAN = 3;       // 线性一致 Scan：走 Raft apply
     OP_BATCH_PUT = 4;  // 【扩展】原子批量写入日志类型
+    OP_TXN_PREWRITE =5;
+    OP_TXN_COMMIT =6;
+    OP_TXN_ROLLBACK=7;
+    OP_TXN_RESOLVE =8; // CheckTxnStatus 可能回滚 primary，也要走 Raft
+    OP_TSO_RESERVE =9; // TSO 预留上界：先持久化「未来上界」再发号，failover 不重复发号
+}
+
+// MVCC 快照读遇到未提交锁时返回。
+// 客户端应使用 primary + lock_ts 调用 CheckTxnStatus，
+// 再根据返回结果重试读取或推进 secondary。
+message LockConflict{
+    string key=1;
+    string primary =2;
+    uint64 lock_ts =3;
+}
+
+message Mutation{
+    enum Op{
+        PUT=0;
+        DELETE=1;
+    }
+    Op op=1;
+    string key=2;
+    bytes value=3;
+}
+
+message TxnPrewriteRequest {
+    repeated Mutation mutations = 1;
+    string primary =2;
+    uint64 start_ts =3;
+    uint64 ttl_ms =4;
+}
+
+message TxnPrewriteResponse {
+    bool success=1;
+    string redirect =2; // 非 leader 时回传 leader 地址（沿用现有机制）
+    string error =3;
+    // 冲突信息：客户端据此决定 backoff 重试还是 resolve 残锁
+    string conflict_key=4;
+    string conflict_primary=5;
+    uint64 conflict_start_ts=6;
+    uint64 conflict_commit_ts=7;
+}
+
+message TxnCommitRequest {
+  repeated string keys = 1;
+  uint64 start_ts = 2;
+  uint64 commit_ts = 3;     // 0 = 由 leader 在 apply 时用 LocalTso 分配
+}
+
+message TxnCommitResponse {
+    bool success =1;
+    string redirect =2;
+    string error =3;
+    uint64 commit_ts =4;// 实际使用的 commit_ts
+}
+
+message TxnRollbackRequest{
+    repeated string keys=1;
+    uint64 start_ts=2;
+}
+
+message TxnRollbackResponse {
+  bool success = 1;
+  string redirect = 2;
+  string error = 3;
+}
+
+message CheckTxnStatusRequest {
+  string primary = 1;
+  uint64 lock_ts = 2;
+}
+
+message CheckTxnStatusResponse {
+  bool success = 1;
+  string redirect = 2;
+  string error = 3;
+  // committed=true → commit_ts 有效；否则看 remaining_ttl_ms：
+  // 0 = 已回滚，>0 = 锁仍存活需 backoff。
+  bool committed =4;
+  uint64 commit_ts =5;
+  uint64 remaining_ttl_ms =6;
+}
+
+message TsoRequest {
+  uint32 count = 1;         // 批量取号，默认 1
+}
+
+message TsoResponse {
+  uint64 ts = 1;            // 返回[ts, ts+count)区间
+  string redirect = 2;
+  bool success = 3;
+  string error = 4;
 }
 
 // KV 操作日志（最终写入 Raft WAL 预写日志与共识网络的内容）
@@ -35,6 +128,8 @@ message PutResponse {
 message GetRequest {
     string key = 1;
     bool linearizable = 2; // true = 走 ReadIndex 强一致读路径；false = 走直接读取状态机快路径
+    uint64 snapshot_ts= 3;// 0 = 非事务读（走旧路径，向后兼容）
+
 }
 
 message GetResponse {
@@ -43,6 +138,9 @@ message GetResponse {
     bool found = 3;    // 目标 Key 是否在 RocksDB 中物理存在
     string redirect = 4;
     string error = 5;
+
+    // 仅 snapshot_ts > 0 且读到未提交锁时设置。
+    LockConflict lock_conflict = 6;
 }
 
 message DeleteRequest {
@@ -67,6 +165,7 @@ message ScanRequest {
     string end_key = 2;    // 扫描结束 key（不含），为空表示无上界边界
     int32 limit = 3;       // 最多返回条数，0 表示不限制上限
     bool linearizable = 4; // true = ReadIndex 线性一致读
+    uint64 snapshot_ts = 5;   // 0 = 非事务读（走旧路径，向后兼容）
 }
 
 message ScanResponse {
@@ -74,6 +173,9 @@ message ScanResponse {
     repeated KvPair kvs = 2;
     string redirect = 3;
     string error = 4;
+
+    // Scan 遇到的第一个未提交锁。
+    LockConflict lock_conflict = 5;
 }
 
 // 【扩展】真正的物理批量写入请求/响应包
@@ -96,4 +198,11 @@ service KvService {
     
     // 【高级物化】真正的物理批量共识接口
     rpc BatchPut(BatchPutRequest) returns (BatchPutResponse);
+
+    //mvcc
+    rpc TxnPrewrite(TxnPrewriteRequest) returns (TxnPrewriteResponse);
+    rpc TxnCommit(TxnCommitRequest) returns (TxnCommitResponse);
+    rpc TxnRollback(TxnRollbackRequest) returns (TxnRollbackResponse);
+    rpc CheckTxnStatus(CheckTxnStatusRequest) returns (CheckTxnStatusResponse);
+    rpc GetTso(TsoRequest) returns (TsoResponse);
 }
